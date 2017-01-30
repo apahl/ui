@@ -1,0 +1,505 @@
+
+import private/cui
+
+type
+  Widget* = ref object of RootRef ## abstract Widget base class.
+
+proc init*() =
+  var o: cui.InitOptions
+  var err: cstring
+  err = cui.init(addr(o))
+  if err != nil:
+    let msg = $err
+    freeInitError(err)
+    raise newException(ValueError, msg)
+
+proc quit*() = cui.quit()
+
+proc mainLoop*() =
+  cui.main()
+  cui.uninit()
+
+# ------------------- Button --------------------------------------
+
+template newFinal(result) =
+  #proc finalize(x: type(result)) {.nimcall.} =
+  #  controlDestroy(x.impl)
+  new(result) #, finalize)
+
+template voidCallback(name, supertyp, basetyp, on) {.dirty.} =
+  proc name(w: ptr cui.supertyp; data: pointer) {.cdecl.} =
+    let widget = cast[basetyp](data)
+    if widget.on != nil: widget.on()
+
+template intCallback(name, supertyp, basetyp, on) {.dirty.} =
+  proc name(w: ptr cui.supertyp; data: pointer) {.cdecl.} =
+    let widget = cast[basetyp](data)
+    if widget.on != nil: widget.on(widget.value)
+
+type
+  Button* = ref object of Widget
+    impl*: ptr cui.Button
+    onclick*: proc () {.closure.}
+
+voidCallback(wrapOnClick, Button, Button, onclick)
+
+proc text*(b: Button): string =
+  ## Gets the button's text.
+  $buttonText(b.impl)
+
+proc `text=`*(b: Button; text: string) =
+  ## Sets the button's text.
+  buttonSetText(b.impl, text)
+
+proc newButton*(text: string; onclick: proc() = nil): Button =
+  newFinal(result)
+  result.impl = cui.newButton(text)
+  result.impl.buttonOnClicked(wrapOnClick, cast[pointer](result))
+  result.onclick = onclick
+
+# ----------------- Window -------------------------------------------
+
+type
+  Window* = ref object of Widget
+    impl*: ptr cui.Window
+    onclosing*: proc (): bool
+    child: Widget
+
+proc title*(w: Window): string =
+  ## Gets the window's title.
+  $windowTitle(w.impl)
+
+proc `title=`*(w: Window; text: string) =
+  ## Sets the window's title.
+  windowSetTitle(w.impl, text)
+
+proc destroy*(w: Window) =
+  ## this needs to be called if the callback passed to addQuitItem returns
+  ## true. Don't ask...
+  controlDestroy(w.impl)
+
+proc onclosingWrapper(rw: ptr cui.Window; data: pointer): cint {.cdecl.} =
+  let w = cast[Window](data)
+  if w.onclosing != nil:
+    if w.onclosing():
+      controlDestroy(w.impl)
+      cui.quit()
+
+proc newWindow*(title: string; width, height: int; hasMenubar: bool): Window =
+  newFinal(result)
+  result.impl = cui.newWindow(title, cint width, cint height,
+                                cint hasMenubar)
+  windowOnClosing(result.impl, onClosingWrapper, cast[pointer](result))
+
+proc margined*(w: Window): bool = windowMargined(w.impl) != 0
+proc `margined=`*(w: Window; x: bool) = windowSetMargined(w.impl, cint(x))
+
+proc setChild*[SomeWidget: Widget](w: Window; child: SomeWidget) =
+  windowSetChild(w.impl, child.impl)
+  w.child = child
+
+proc openFile*(parent: Window): string =
+  let x = openFile(parent.impl)
+  result = $x
+  if x != nil: freeText(x)
+
+proc saveFile*(parent: Window): string =
+  let x = saveFile(parent.impl)
+  result = $x
+  if x != nil: freeText(x)
+
+proc msgBox*(parent: Window; title, desc: string) =
+  msgBox(parent.impl, title, desc)
+proc msgBoxError*(parent: Window; title, desc: string) =
+  msgBoxError(parent.impl, title, desc)
+
+# ------------------------- Box ------------------------------------------
+
+type
+  Box* = ref object of Widget
+    impl*: ptr cui.Box
+    children*: seq[Widget]
+
+proc add*[SomeWidget: Widget](b: Box; child: SomeWidget; stretchy=false) =
+  boxAppend(b.impl, child.impl, cint(stretchy))
+  b.children.add child
+
+proc delete*(b: Box; index: int) = boxDelete(b.impl, index.uint)
+proc padded*(b: Box): bool = boxPadded(b.impl) != 0
+proc `padded=`*(b: Box; x: bool) = boxSetPadded(b.impl, x.cint)
+
+proc newHorizontalBox*(padded = false): Box =
+  newFinal(result)
+  result.impl = cui.newHorizontalBox()
+  result.children = @[]
+  boxSetPadded(result.impl, padded.cint)
+
+proc newVerticalBox*(padded = false): Box =
+  newFinal(result)
+  result.impl = cui.newVerticalBox()
+  result.children = @[]
+  boxSetPadded(result.impl, padded.cint)
+
+# -------------------- Checkbox ----------------------------------
+
+type
+  Checkbox* = ref object of Widget
+    impl*: ptr cui.Checkbox
+    ontoggled*: proc ()
+
+proc text*(c: Checkbox): string = $checkboxText(c.impl)
+proc `text=`*(c: Checkbox; text: string) = checkboxSetText(c.impl, text)
+
+voidCallback(wrapOntoggled, Checkbox, Checkbox, ontoggled)
+
+proc checked*(c: Checkbox): bool = checkboxChecked(c.impl) != 0
+
+proc `checked=`*(c: Checkbox; x: bool) =
+  checkboxSetChecked(c.impl, cint(x))
+
+proc newCheckbox*(text: string; ontoggled: proc() = nil): Checkbox =
+  newFinal(result)
+  result.impl = cui.newCheckbox(text)
+  result.ontoggled = ontoggled
+  checkboxOnToggled(result.impl, wrapOntoggled, cast[pointer](result))
+
+# ------------------ Entry ---------------------------------------
+
+type
+  Entry* = ref object of Widget
+    impl*: ptr cui.Entry
+    onchanged*: proc ()
+
+proc text*(e: Entry): string = $entryText(e.impl)
+proc `text=`*(e: Entry; text: string) = entrySetText(e.impl, text)
+
+voidCallback(wrapOnchanged, Entry, Entry, onchanged)
+
+proc readOnly*(e: Entry): bool = entryReadOnly(e.impl) != 0
+
+proc `readOnly=`*(e: Entry; x: bool) =
+  entrySetReadOnly(e.impl, cint(x))
+
+proc newEntry*(text: string; onchanged: proc() = nil): Entry =
+  newFinal(result)
+  result.impl = cui.newEntry()
+  result.impl.entryOnChanged(wrapOnchanged, cast[pointer](result))
+  result.onchanged = onchanged
+  entrySetText(result.impl, text)
+
+# ----------------- Label ----------------------------------------
+
+type
+  Label* = ref object of Widget
+    impl*: ptr cui.Label
+
+proc text*(L: Label): string = $labelText(L.impl)
+proc `text=`*(L: Label; text: string) = labelSetText(L.impl, text)
+proc newLabel*(text: string): Label =
+  newFinal(result)
+  result.impl = cui.newLabel(text)
+
+# ---------------- Tab --------------------------------------------
+
+type
+  Tab* = ref object of Widget
+    impl*: ptr cui.Tab
+    children*: seq[Widget]
+
+proc add*[SomeWidget: Widget](t: Tab; name: string; c: SomeWidget) =
+  tabAppend t.impl, name, c.impl
+  t.children.add c
+
+proc insertAt*[SomeWidget: Widget](t: Tab; name: string; at: int; c: SomeWidget) =
+  tabInsertAt(t.impl, name, at.uint64, c.impl)
+  t.children.insert(c, at)
+
+proc delete*(t: Tab; index: int) =
+  tabDelete(t.impl, index.uint)
+  t.children.delete(index)
+
+proc numPages*(t: Tab): int = tabNumPages(t.impl).int
+proc margined*(t: Tab; page: int): bool =
+  tabMargined(t.impl, page.uint) != 0
+proc `margined=`*(t: Tab; page: int; x: bool) =
+  tabSetMargined(t.impl, page.uint, cint(x))
+proc newTab*(): Tab =
+  newFinal result
+  result.impl = cui.newTab()
+  result.children = @[]
+
+# ------------- Group --------------------------------------------------
+
+type
+  Group* = ref object of Widget
+    impl*: ptr cui.Group
+    child: Widget
+
+proc title*(g: Group): string = $groupTitle(g.impl)
+proc `title=`*(g: Group; title: string) =
+  groupSetTitle(g.impl, title)
+proc `child=`*[SomeWidget: Widget](g: Group; c: SomeWidget) =
+  groupSetChild(g.impl, c.impl)
+  g.child = c
+proc margined*(g: Group): bool = groupMargined(g.impl) != 0
+proc `margined=`*(g: Group; x: bool) =
+  groupSetMargined(g.impl, x.cint)
+
+proc newGroup*(title: string; margined=false): Group =
+  newFinal result
+  result.impl = cui.newGroup(title)
+  groupSetMargined(result.impl, margined.cint)
+
+# ----------------------- Spinbox ---------------------------------------
+
+type
+  Spinbox* = ref object of Widget
+    impl*: ptr cui.Spinbox
+    onchanged*: proc(newvalue: int)
+
+proc value*(s: Spinbox): int = spinboxValue(s.impl).int
+proc `value=`*(s: Spinbox; value: int) = spinboxSetValue(s.impl, value.cint)
+
+intCallback wrapsbOnChanged, Spinbox, Spinbox, onchanged
+
+proc newSpinbox*(min, max: int; onchanged: proc (newvalue: int) = nil): Spinbox =
+  newFinal result
+  result.impl = cui.newSpinbox(cint min, cint max)
+  spinboxOnChanged result.impl, wrapsbOnChanged, cast[pointer](result)
+  result.onchanged = onchanged
+
+# ---------------------- Slider ---------------------------------------
+
+type
+  Slider* = ref object of Widget
+    impl*: ptr cui.Slider
+    onchanged*: proc(newvalue: int)
+
+proc value*(s: Slider): int = sliderValue(s.impl).int
+proc `value=`*(s: Slider; value: int) = sliderSetValue(s.impl, cint value)
+
+intCallback wrapslOnChanged, Slider, Slider, onchanged
+
+proc newSlider*(min, max: int; onchanged: proc (newvalue: int) = nil): Slider =
+  newFinal result
+  result.impl = cui.newSlider(cint min, cint max)
+  sliderOnChanged result.impl, wrapslOnChanged, cast[pointer](result)
+  result.onchanged = onchanged
+
+# ------------------- Progressbar ---------------------------------
+
+type
+  ProgressBar* = ref object of Widget
+    impl*: ptr cui.ProgressBar
+
+proc `value=`*(p: ProgressBar; n: int) =
+  progressBarSetValue p.impl, n.cint
+
+proc newProgressBar*(): ProgressBar =
+  newFinal result
+  result.impl = cui.newProgressBar()
+
+# ------------------------- Separator ----------------------------
+
+type
+  Separator* = ref object of Widget
+    impl*: ptr cui.Separator
+
+proc newHorizontalSeparator*(): Separator =
+  newFinal result
+  result.impl = cui.newHorizontalSeparator()
+
+# ------------------------ Combobox ------------------------------
+
+type
+  Combobox* = ref object of Widget
+    impl*: ptr cui.Combobox
+    onselected*: proc ()
+
+proc add*(c: Combobox; text: string) =
+  c.impl.comboboxAppend text
+proc selected*(c: Combobox): int = comboboxSelected(c.impl).int
+proc `selected=`*(c: Combobox; n: int) =
+  comboboxSetSelected c.impl, cint n
+
+voidCallback wrapbbOnSelected, Combobox, Combobox, onselected
+
+proc newCombobox*(onSelected: proc() = nil): Combobox =
+  newFinal result
+  result.impl = cui.newCombobox()
+  result.onSelected = onSelected
+  comboboxOnSelected(result.impl, wrapbbOnSelected, cast[pointer](result))
+
+# ----------------------- EditableCombobox ----------------------
+
+type
+  EditableCombobox* = ref object of Widget
+    impl*: ptr cui.EditableCombobox
+    onchanged*: proc ()
+
+proc add*(c: EditableCombobox; text: string) =
+  editableComboboxAppend(c.impl, text)
+
+proc text*(c: EditableCombobox): string =
+  $editableComboboxText(c.impl)
+
+proc `text=`*(c: EditableCombobox; text: string) =
+  editableComboboxSetText(c.impl, text)
+
+voidCallback wrapecbOnchanged, EditableCombobox, EditableCombobox, onchanged
+
+proc newEditableCombobox*(onchanged: proc () = nil): EditableCombobox =
+  newFinal result
+  result.impl = cui.newEditableCombobox()
+  result.onchanged = onchanged
+  editableComboboxOnChanged result.impl, wrapecbOnchanged, cast[pointer](result)
+
+# ------------------------ RadioButtons ----------------------------
+
+type
+  RadioButtons* = ref object of Widget
+    impl*: ptr cui.RadioButtons
+
+proc add*(r: RadioButtons; text: string) =
+  radioButtonsAppend(r.impl, text)
+proc newRadioButtons*(): RadioButtons =
+  newFinal result
+  result.impl = cui.newRadioButtons()
+
+# ------------------------ MultilineEntry ------------------------------
+
+type
+  MultilineEntry* = ref object of Widget
+    impl*: ptr cui.MultilineEntry
+    onchanged*: proc ()
+
+proc text*(e: MultilineEntry): string =
+  $multilineEntryText(e.impl)
+proc `text=`*(e: MultilineEntry; text: string) =
+  multilineEntrySetText(e.impl, text)
+proc add*(e: MultilineEntry; text: string) =
+  multilineEntryAppend(e.impl, text)
+
+voidCallback wrapmeOnchanged, MultilineEntry, MultilineEntry, onchanged
+
+proc readonly*(e: MultilineEntry): bool =
+  multilineEntryReadOnly(e.impl) != 0
+proc `readonly=`*(e: MultilineEntry; x: bool) =
+  multilineEntrySetReadOnly(e.impl, cint(x))
+
+proc newMultilineEntry*(): MultilineEntry =
+  newFinal result
+  result.impl = cui.newMultilineEntry()
+  multilineEntryOnChanged(result.impl, wrapmeOnchanged, cast[pointer](result))
+
+proc newNonWrappingMultilineEntry*(): MultilineEntry =
+  newFinal result
+  result.impl = cui.newNonWrappingMultilineEntry()
+  multilineEntryOnChanged(result.impl, wrapmeOnchanged, cast[pointer](result))
+
+# ---------------------- MenuItem ---------------------------------------
+
+type
+  MenuItem* = ref object of Widget
+    impl*: ptr cui.MenuItem
+    onclicked*: proc ()
+
+proc enable*(m: MenuItem) = menuItemEnable(m.impl)
+proc disable*(m: MenuItem) = menuItemDisable(m.impl)
+
+proc wrapmeOnclicked(sender: ptr cui.MenuItem;
+                     window: ptr cui.Window; data: pointer) {.cdecl.} =
+  let m = cast[MenuItem](data)
+  if m.onclicked != nil: m.onclicked()
+
+proc checked*(m: MenuItem): bool = menuItemChecked(m.impl) != 0
+proc `checked=`*(m: MenuItem; x: bool) = menuItemSetChecked(m.impl, cint(x))
+
+# -------------------- Menu ---------------------------------------------
+
+type
+  Menu* = ref object of Widget
+    impl*: ptr cui.Menu
+    children*: seq[MenuItem]
+
+template addMenuItemImpl(ex) =
+  newFinal result
+  result.impl = ex
+  menuItemOnClicked(result.impl, wrapmeOnclicked, cast[pointer](result))
+  m.children.add result
+
+proc addItem*(m: Menu; name: string, onclicked: proc()): MenuItem {.discardable.} =
+  addMenuItemImpl(menuAppendItem(m.impl, name))
+  result.onclicked = onclicked
+
+proc addCheckItem*(m: Menu; name: string, onclicked: proc()): MenuItem {.discardable.} =
+  addMenuItemImpl(menuAppendCheckItem(m.impl, name))
+  result.onclicked = onclicked
+
+type
+  ShouldQuitClosure = ref object
+    fn: proc(): bool
+
+proc wrapOnShouldQuit(data: pointer): cint {.cdecl.} =
+  let c = cast[ShouldQuitClosure](data)
+  result = cint(c.fn())
+  if result == 1:
+    GC_unref c
+
+proc addQuitItem*(m: Menu, shouldQuit: proc(): bool): MenuItem {.discardable.} =
+  newFinal result
+  result.impl = menuAppendQuitItem(m.impl)
+  m.children.add result
+  var cl = ShouldQuitClosure(fn: shouldQuit)
+  GC_ref cl
+  onShouldQuit(wrapOnShouldQuit, cast[pointer](cl))
+
+proc addPreferencesItem*(m: Menu, onclicked: proc()): MenuItem {.discardable.} =
+  addMenuItemImpl(menuAppendPreferencesItem(m.impl))
+  result.onclicked = onclicked
+
+proc addAboutItem*(m: Menu, onclicked: proc()): MenuItem {.discardable.} =
+  addMenuItemImpl(menuAppendAboutItem(m.impl))
+  result.onclicked = onclicked
+
+proc addSeparator*(m: Menu) =
+  menuAppendSeparator m.impl
+
+proc newMenu*(name: string): Menu =
+  newFinal result
+  result.impl = cui.newMenu(name)
+  result.children = @[]
+
+# -------------------- Generics ------------------------------------
+
+proc show*[W: Widget](w: W) =
+  cui.controlShow(w.impl)
+
+proc hide*[W: Widget](w: W) =
+  cui.controlHide(w.impl)
+
+proc enable*[W: Widget](w: W) =
+  cui.controlEnable(w.impl)
+
+proc disable*[W: Widget](w: W) =
+  cui.controlDisable(w.impl)
+
+# -------------------- DateTimePicker ------------------------------
+
+when false:
+  # XXX no way yet to get the date out of this?
+  type
+    DateTimePicker* = ref object of Widget
+      impl*: ptr cui.DateTimePicker
+
+  proc newDateTimePicker*(): DateTimePicker =
+    newFinal result
+    result.impl = cui.newDateTimePicker()
+
+  proc newDatePicker*(): DateTimePicker =
+    newFinal result
+    result.impl = cui.newDatePicker()
+
+  proc newTimePicker*(): DateTimePicker =
+    newFinal result
+    result.impl = cui.newTimePicker()
